@@ -1,0 +1,15 @@
+[package]
+name = "ratodoui_server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = "1.0.188"
+futures = "0.3.28"
+tokio = { version = "1.32.0", features = ["full"] }
+dotenv = "0.15.0"
+google-tasks1 = "7.0.0"
+
+
+[dependencies.mongodb]
+version = "3.7.0"
