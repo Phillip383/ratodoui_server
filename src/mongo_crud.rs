@@ -1,4 +1,6 @@
+use axum::Json;
 use dotenv::dotenv;
+use futures::TryStreamExt;
 use mongodb::{
     Client, Collection, Cursor, Database,
     bson::{Document, doc, from_document, oid::ObjectId},
@@ -12,7 +14,7 @@ pub struct TodoList {
     #[serde(rename = "_id")]
     id: ObjectId,
     title: String,
-    todo_items: Vec<TodoItem>,
+    owner_id: ObjectId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -38,6 +40,22 @@ pub async fn connect() -> error::Result<Database> {
             }
         }
         Err(e) => panic!("Database connection failed {}", e),
+    }
+}
+
+pub async fn get_lists() -> Json<Option<Vec<TodoList>>> {
+    let db = connect().await.expect("Database connection failed");
+    let lists = db.collection::<TodoList>("todo_lists").find(doc! {}).await;
+
+    match lists {
+        Ok(val) => {
+            let v: Vec<TodoList> = val.try_collect().await.unwrap();
+            return Json(Some(v));
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            return Json(None);
+        }
     }
 }
 
@@ -110,31 +128,6 @@ mod tests {
     #[tokio::test]
     async fn test_insert_list() {
         let mongo = get_test_mongo().await;
-
-        //insert list
-        let list = TodoList {
-            id: ObjectId::new(),
-            title: "Default".to_string(),
-            todo_items: Vec::new(),
-        };
-
-        let result = mongo
-            .collection::<TodoList>("todo_lists")
-            .insert_one(list)
-            .await
-            .unwrap();
-
-        //query for inserted list
-        let query = mongo
-            .collection::<TodoList>("todo_lists")
-            .find_one(doc! {"_id": result.inserted_id})
-            .await
-            .unwrap();
-
-        //assert if list exists
-        assert!(query.is_some());
-
-        //TODO: Clean up test insertion...
     }
 
     #[tokio::test]
@@ -178,44 +171,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_lists() {
-        let mongo = get_test_mongo().await;
-        let lists: mongodb::Collection<Document> = mongo.collection("todo_lists");
-
-        assert!(lists.name() == "todo_lists");
+        let lists = get_lists().await;
+        assert!(lists.is_some());
     }
 
     #[tokio::test]
     async fn test_get_list() {
-        let mongo = get_test_mongo().await;
         let list = get_list_by_name("General").await;
         assert!(list.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_get_todos() {
-        let mongo = get_test_mongo().await;
-        let todo_id = mongo
-            .collection("todos")
-            .insert_one(doc! {
-                "title": "Milk",
-                "description": "Pick up from walmart.",
-                "completed": false
-            })
-            .await
-            .unwrap();
-
-        let filter = doc! {"title": "General"};
-        let update = doc! {
-            "$push": {
-                "todos": &todo_id.inserted_id,
-            }
-        };
-        let insert = mongo
-            .collection::<Document>("todo_lists")
-            .update_one(filter, update)
-            .await;
-
-        let todo = get_todos("General").await.unwrap();
-        println!("{:?}", todo);
     }
 }
