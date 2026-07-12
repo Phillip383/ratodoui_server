@@ -10,6 +10,16 @@ use serde::{Deserialize, Serialize};
 use std::env;
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct User {
+    #[serde(rename = "_id")]
+    id: ObjectId,
+    email: String,
+    first_name: String,
+    last_name: String,
+    password_hash: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TodoList {
     #[serde(rename = "_id")]
     id: ObjectId,
@@ -24,6 +34,7 @@ pub struct TodoItem {
     title: String,
     description: String,
     completed: bool,
+    owner_id: ObjectId,
 }
 
 pub async fn connect() -> error::Result<Database> {
