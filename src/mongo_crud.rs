@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 
 #[derive(Debug, Serialize, Deserialize)]
-struct TodoList {
+pub struct TodoList {
     #[serde(rename = "_id")]
     id: ObjectId,
     title: String,
@@ -16,7 +16,7 @@ struct TodoList {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct TodoItem {
+pub struct TodoItem {
     #[serde(rename = "_id")]
     id: ObjectId,
     title: String,
@@ -24,95 +24,82 @@ struct TodoItem {
     completed: bool,
 }
 
-struct MongoCrud {
-    db: Database,
+pub async fn connect() -> error::Result<Database> {
+    dotenv().ok();
+    match env::var("DB_URI") {
+        Ok(val) => {
+            let client = Client::with_uri_str(val).await?;
+            match env::var("DB_NAME") {
+                Ok(val) => {
+                    let db = client.database(&val);
+                    return Ok(db);
+                }
+                Err(e) => panic!("Failed to get database {}", e),
+            }
+        }
+        Err(e) => panic!("Database connection failed {}", e),
+    }
 }
 
-impl MongoCrud {
-    pub async fn connect() -> error::Result<MongoCrud> {
-        dotenv().ok();
-        match env::var("DB_URI") {
-            Ok(val) => {
-                let client = Client::with_uri_str(val).await?;
-                match env::var("DB_NAME") {
-                    Ok(val) => {
-                        let db = client.database(&val);
-                        let mongo = MongoCrud { db };
-                        return Ok(mongo);
-                    }
-                    Err(e) => panic!("Failed to get database {}", e),
-                }
+pub async fn insert_list(list: TodoList) {}
+
+pub async fn insert_todo(todo: TodoItem) {}
+
+pub async fn remove_list(id: ObjectId) {}
+
+pub async fn remove_todo(id: ObjectId) {}
+
+pub async fn update_list(list: TodoList) {}
+
+pub async fn update_todo(todo: TodoItem) {}
+
+pub async fn get_list_by_name(name: &str) -> Option<Document> {
+    let db = connect().await.unwrap();
+    let list = db
+        .collection("todo_lists")
+        .find_one(doc! {"title" : name})
+        .await
+        .unwrap_or(None);
+
+    println!("{:?}", list);
+    list
+}
+
+pub async fn get_todos(list_name: &str) -> error::Result<TodoList> {
+    let pipeline = vec![
+        doc! {
+            "$match": {
+                "title": list_name,
             }
-            Err(e) => panic!("Database connection failed {}", e),
-        }
-    }
-
-    pub async fn insert_list(&self, list: TodoList) {}
-
-    pub async fn insert_todo(&self, todo: TodoItem) {}
-
-    pub async fn remove_list(&self, id: ObjectId) {}
-
-    pub async fn remove_todo(&self, id: ObjectId) {}
-
-    pub async fn update_list(&self, list: TodoList) {}
-
-    pub async fn update_todo(&self, todo: TodoItem) {}
-
-    pub async fn get_list_by_name(&self, name: &str) -> Option<Document> {
-        let list = self
-            .db
-            .collection("todo_lists")
-            .find_one(doc! {"title" : name})
-            .await
-            .unwrap_or(None);
-
-        println!("{:?}", list);
-        list
-    }
-
-    pub async fn get_todos(&self, list_name: &str) -> error::Result<TodoList> {
-        let pipeline = vec![
-            doc! {
-                "$match": {
-                    "title": list_name,
-                }
-            },
-            doc! {
+        },
+        doc! {
             "$lookup": {
                 "from": "todos",
-                "localField": "todos",
-                "foreignField": "_id",
+                "localField": "_id",
+                "foreignField": "owner_id",
                 "as": "todo_items",
-            }},
-            doc! {
-                "$project": {
-                    "title": 1,
-                    "todo_items": 1
-                }
-            },
-        ];
-        let col: Collection<Document> = self.db.collection("todo_lists");
-        let mut cursor = col.aggregate(pipeline).await?;
+            }
+        },
+    ];
+    let db = connect().await.unwrap();
+    let col: Collection<Document> = db.collection("todo_lists");
+    let mut cursor = col.aggregate(pipeline).await?;
 
-        while cursor.advance().await? {
-            let doc = cursor.deserialize_current()?;
-            let list: TodoList = from_document(doc)?;
-            println!("{:?}", list);
-            return Ok(list);
-        }
-        Err(error::Error::custom("Failed to populate todo lists"))
+    while cursor.advance().await? {
+        let doc = cursor.deserialize_current()?;
+        let list: TodoList = from_document(doc)?;
+        println!("{:?}", list);
+        return Ok(list);
     }
+    Err(error::Error::custom("Failed to populate todo lists"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    async fn get_test_mongo() -> MongoCrud {
-        MongoCrud::connect()
-            .await
-            .expect("Failed to connect to MongoDB Atlas")
+    async fn get_test_mongo() -> Database {
+        connect().await.expect("Failed to connect to MongoDB Atlas")
     }
 
     #[tokio::test]
@@ -132,7 +119,6 @@ mod tests {
         };
 
         let result = mongo
-            .db
             .collection::<TodoList>("todo_lists")
             .insert_one(list)
             .await
@@ -140,7 +126,6 @@ mod tests {
 
         //query for inserted list
         let query = mongo
-            .db
             .collection::<TodoList>("todo_lists")
             .find_one(doc! {"_id": result.inserted_id})
             .await
@@ -194,7 +179,7 @@ mod tests {
     #[tokio::test]
     async fn test_lists() {
         let mongo = get_test_mongo().await;
-        let lists: mongodb::Collection<Document> = mongo.db.collection("todo_lists");
+        let lists: mongodb::Collection<Document> = mongo.collection("todo_lists");
 
         assert!(lists.name() == "todo_lists");
     }
@@ -202,7 +187,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_list() {
         let mongo = get_test_mongo().await;
-        let list = mongo.get_list_by_name("General").await;
+        let list = get_list_by_name("General").await;
         assert!(list.is_some());
     }
 
@@ -210,7 +195,6 @@ mod tests {
     async fn test_get_todos() {
         let mongo = get_test_mongo().await;
         let todo_id = mongo
-            .db
             .collection("todos")
             .insert_one(doc! {
                 "title": "Milk",
@@ -227,12 +211,11 @@ mod tests {
             }
         };
         let insert = mongo
-            .db
             .collection::<Document>("todo_lists")
             .update_one(filter, update)
             .await;
 
-        let todo = mongo.get_todos("General").await.unwrap();
+        let todo = get_todos("General").await.unwrap();
         println!("{:?}", todo);
     }
 }
