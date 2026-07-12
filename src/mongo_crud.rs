@@ -1,4 +1,4 @@
-use axum::Json;
+use axum::{Json, extract::Query};
 use dotenv::dotenv;
 use futures::TryStreamExt;
 use mongodb::{
@@ -37,6 +37,11 @@ pub struct TodoItem {
     owner_id: ObjectId,
 }
 
+#[derive(Deserialize)]
+pub struct TodoQuery {
+    list: ObjectId,
+}
+
 pub async fn connect() -> error::Result<Database> {
     dotenv().ok();
     match env::var("DB_URI") {
@@ -70,17 +75,18 @@ pub async fn get_lists() -> Json<Option<Vec<TodoList>>> {
     }
 }
 
-pub async fn insert_list(list: TodoList) {}
-
-pub async fn insert_todo(todo: TodoItem) {}
-
-pub async fn remove_list(id: ObjectId) {}
-
-pub async fn remove_todo(id: ObjectId) {}
-
-pub async fn update_list(list: TodoList) {}
-
-pub async fn update_todo(todo: TodoItem) {}
+pub async fn get_todos(Query(opts): Query<TodoQuery>) -> Json<Option<Vec<TodoItem>>> {
+    let db = connect().await.unwrap();
+    let todos = db
+        .collection::<TodoItem>("todos")
+        .find(doc! {
+            "owner_id": opts.list
+        })
+        .await
+        .unwrap();
+    let todos = todos.try_collect().await.unwrap();
+    Json(Some(todos))
+}
 
 pub async fn get_list_by_name(name: &str) -> Option<Document> {
     let db = connect().await.unwrap();
@@ -92,35 +98,6 @@ pub async fn get_list_by_name(name: &str) -> Option<Document> {
 
     println!("{:?}", list);
     list
-}
-
-pub async fn get_todos(list_name: &str) -> error::Result<TodoList> {
-    let pipeline = vec![
-        doc! {
-            "$match": {
-                "title": list_name,
-            }
-        },
-        doc! {
-            "$lookup": {
-                "from": "todos",
-                "localField": "_id",
-                "foreignField": "owner_id",
-                "as": "todo_items",
-            }
-        },
-    ];
-    let db = connect().await.unwrap();
-    let col: Collection<Document> = db.collection("todo_lists");
-    let mut cursor = col.aggregate(pipeline).await?;
-
-    while cursor.advance().await? {
-        let doc = cursor.deserialize_current()?;
-        let list: TodoList = from_document(doc)?;
-        println!("{:?}", list);
-        return Ok(list);
-    }
-    Err(error::Error::custom("Failed to populate todo lists"))
 }
 
 #[cfg(test)]
