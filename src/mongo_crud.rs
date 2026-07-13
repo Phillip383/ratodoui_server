@@ -76,7 +76,18 @@ pub async fn create_list(Json(_payload): Json<TodoList>) {
         .await;
 }
 
-pub async fn create_todo(Json(_payload): Json<TodoItem>) {}
+pub async fn create_todo(Json(_payload): Json<TodoItem>) {
+    let db = connect().await.unwrap();
+    let todo = TodoItem {
+        id: Some(ObjectId::new()),
+        title: _payload.title,
+        description: _payload.description,
+        completed: _payload.completed,
+        owner_id: _payload.owner_id,
+    };
+
+    let _ = db.collection::<TodoItem>("todos").insert_one(todo).await;
+}
 
 //READ
 
