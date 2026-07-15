@@ -1,12 +1,13 @@
-use axum::{Json, extract::Query};
+use axum::{
+    Json,
+    extract::{Query, State},
+};
 use dotenv::dotenv;
 use futures::TryStreamExt;
 use mongodb::{
     Client, Database,
-    action::InsertOne,
     bson::{doc, oid::ObjectId},
     error,
-    results::InsertOneResult,
 };
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -42,28 +43,24 @@ pub struct TodoItem {
 #[derive(Deserialize)]
 pub struct TodoQuery {
     list: ObjectId,
+    id: Option<ObjectId>,
+}
+
+#[derive(Deserialize)]
+pub struct ListQuery {
+    id: ObjectId,
 }
 
 pub async fn connect() -> error::Result<Database> {
     dotenv().ok();
-    match env::var("DB_URI") {
-        Ok(val) => {
-            let client = Client::with_uri_str(val).await?;
-            match env::var("DB_NAME") {
-                Ok(val) => {
-                    let db = client.database(&val);
-                    return Ok(db);
-                }
-                Err(e) => panic!("Failed to get database {}", e),
-            }
-        }
-        Err(e) => panic!("Database connection failed {}", e),
-    }
+    let uri = env::var("DB_URI").expect("DB_URI must be set");
+    let db_name = env::var("DB_NAME").expect("DB_NAME must be set");
+    let client = Client::with_uri_str(uri).await?;
+    Ok(client.database(db_name.as_str()))
 }
 
 //CREATE
-pub async fn create_list(Json(_payload): Json<TodoList>) {
-    let db = connect().await.unwrap();
+pub async fn create_list(State(db): State<Database>, Json(_payload): Json<TodoList>) {
     let list = TodoList {
         id: Some(ObjectId::new()),
         title: _payload.title,
@@ -76,8 +73,7 @@ pub async fn create_list(Json(_payload): Json<TodoList>) {
         .await;
 }
 
-pub async fn create_todo(Json(_payload): Json<TodoItem>) {
-    let db = connect().await.unwrap();
+pub async fn create_todo(State(db): State<Database>, Json(_payload): Json<TodoItem>) {
     let todo = TodoItem {
         id: Some(ObjectId::new()),
         title: _payload.title,
@@ -91,8 +87,7 @@ pub async fn create_todo(Json(_payload): Json<TodoItem>) {
 
 //READ
 
-pub async fn get_lists() -> Json<Option<Vec<TodoList>>> {
-    let db = connect().await.expect("Database connection failed");
+pub async fn get_lists(State(db): State<Database>) -> Json<Option<Vec<TodoList>>> {
     let lists = db.collection::<TodoList>("todo_lists").find(doc! {}).await;
 
     match lists {
@@ -107,8 +102,10 @@ pub async fn get_lists() -> Json<Option<Vec<TodoList>>> {
     }
 }
 
-pub async fn get_todos(Query(opts): Query<TodoQuery>) -> Json<Option<Vec<TodoItem>>> {
-    let db = connect().await.unwrap();
+pub async fn get_todos(
+    State(db): State<Database>,
+    Query(opts): Query<TodoQuery>,
+) -> Json<Option<Vec<TodoItem>>> {
     let todos = db
         .collection::<TodoItem>("todos")
         .find(doc! {
@@ -122,4 +119,24 @@ pub async fn get_todos(Query(opts): Query<TodoQuery>) -> Json<Option<Vec<TodoIte
 
 //UPDATE
 
+pub async fn update_list(State(db): State<Database>, Json(_payload): Json<TodoList>) {
+    let _ = db
+        .collection::<TodoList>("todo_lists")
+        .update_one(
+            doc! {"_id": _payload.id},
+            doc! {
+                "title": _payload.title
+            },
+        )
+        .await;
+}
+
+pub async fn update_todo(State(db): State<Database>, Json(_payload): Json<TodoItem>) {
+    let db = connect().await.unwrap();
+}
+
 //DELETE
+
+pub async fn remove_list(State(db): State<Database>, Query(_opts): Query<ListQuery>) {}
+
+pub async fn remove_todo(State(db): State<Database>, Query(_opts): Query<TodoQuery>) {}
