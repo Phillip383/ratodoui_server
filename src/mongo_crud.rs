@@ -42,7 +42,7 @@ pub struct TodoItem {
 
 #[derive(Deserialize)]
 pub struct TodoQuery {
-    list: ObjectId,
+    list: Option<ObjectId>,
     id: Option<ObjectId>,
 }
 
@@ -125,18 +125,60 @@ pub async fn update_list(State(db): State<Database>, Json(_payload): Json<TodoLi
         .update_one(
             doc! {"_id": _payload.id},
             doc! {
-                "title": _payload.title
+                "$set": {
+                    "title": _payload.title
+                }
             },
         )
         .await;
 }
 
 pub async fn update_todo(State(db): State<Database>, Json(_payload): Json<TodoItem>) {
-    let db = connect().await.unwrap();
+    let _ = db
+        .collection::<TodoItem>("todos")
+        .update_one(
+            doc! {
+                "_id": _payload.id
+            },
+            doc! {
+                "$set": {
+                    "title": _payload.title,
+                    "description": _payload.description,
+                    "completed": _payload.completed,
+                    "owner_id": _payload.owner_id,
+                }
+            },
+        )
+        .await;
 }
 
 //DELETE
 
-pub async fn remove_list(State(db): State<Database>, Query(_opts): Query<ListQuery>) {}
+pub async fn remove_list(State(db): State<Database>, Query(_opts): Query<ListQuery>) {
+    //Remove the list..
+    let result = db
+        .collection::<TodoList>("todo_lists")
+        .delete_one(doc! {
+            "_id": _opts.id
+        })
+        .await
+        .unwrap_or_default();
 
-pub async fn remove_todo(State(db): State<Database>, Query(_opts): Query<TodoQuery>) {}
+    //Only delete todo's if list was deleted.
+    if result.deleted_count > 0 {
+        //Delete the todo's in the list...
+        let _ = db
+            .collection::<TodoItem>("todos")
+            .delete_many(doc! {"owner_id": _opts.id})
+            .await;
+    }
+}
+
+pub async fn remove_todo(State(db): State<Database>, Query(_opts): Query<TodoQuery>) {
+    let _ = db
+        .collection::<TodoItem>("todos")
+        .delete_one(doc! {
+            "_id": _opts.id,
+        })
+        .await;
+}
