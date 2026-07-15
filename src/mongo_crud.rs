@@ -145,7 +145,6 @@ pub async fn update_todo(State(db): State<Database>, Json(_payload): Json<TodoIt
                     "title": _payload.title,
                     "description": _payload.description,
                     "completed": _payload.completed,
-                    "owner_id": _payload.owner_id,
                 }
             },
         )
