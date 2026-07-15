@@ -27,7 +27,7 @@ pub struct TodoList {
     #[serde(rename = "_id")]
     id: Option<ObjectId>,
     title: String,
-    owner_id: ObjectId,
+    owner_id: Option<ObjectId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -37,7 +37,7 @@ pub struct TodoItem {
     title: String,
     description: String,
     completed: bool,
-    owner_id: ObjectId,
+    owner_id: Option<ObjectId>,
 }
 
 #[derive(Deserialize)]
@@ -118,7 +118,7 @@ pub async fn get_todos(
 }
 
 //UPDATE
-
+//TODO: Refactor these to only require the specific parts needing updates instead of the entire doc...
 pub async fn update_list(State(db): State<Database>, Json(_payload): Json<TodoList>) {
     let _ = db
         .collection::<TodoList>("todo_lists")

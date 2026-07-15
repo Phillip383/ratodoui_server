@@ -2,7 +2,7 @@ mod mongo_crud;
 
 use axum::{
     Router,
-    routing::{delete, post, put},
+    routing::{delete, patch, post, put},
 };
 
 #[tokio::main]
