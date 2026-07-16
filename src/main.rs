@@ -1,8 +1,9 @@
+mod auth;
 mod mongo_crud;
 
 use axum::{
     Router,
-    routing::{delete, patch, post, put},
+    routing::{delete, post, put},
 };
 
 #[tokio::main]
@@ -20,6 +21,8 @@ async fn main() {
         .route("/todos/delete", delete(mongo_crud::remove_todo))
         .route("/lists/update", put(mongo_crud::update_list))
         .route("/todos/update", put(mongo_crud::update_todo))
+        .route("/users/create", put(mongo_crud::create_account))
+        .route("/users/login", post(mongo_crud::login))
         .with_state(db);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")

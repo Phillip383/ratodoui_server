@@ -1,6 +1,7 @@
 use axum::{
     Json,
     extract::{Query, State},
+    http::StatusCode,
 };
 use dotenv::dotenv;
 use futures::TryStreamExt;
@@ -12,6 +13,8 @@ use mongodb::{
 use serde::{Deserialize, Serialize};
 use std::env;
 
+use crate::auth::{self, hash_pass};
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct User {
     #[serde(rename = "_id")]
@@ -20,6 +23,16 @@ pub struct User {
     first_name: String,
     last_name: String,
     password_hash: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NewUser {
+    #[serde(rename = "_id")]
+    id: Option<ObjectId>,
+    email: String,
+    first_name: String,
+    last_name: String,
+    password: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,6 +64,17 @@ pub struct ListQuery {
     id: ObjectId,
 }
 
+#[derive(Deserialize)]
+pub struct UserQuery {
+    id: ObjectId,
+}
+
+#[derive(Deserialize)]
+pub struct LoginQuery {
+    email: String,
+    password: String,
+}
+
 pub async fn connect() -> error::Result<Database> {
     dotenv().ok();
     let uri = env::var("DB_URI").expect("DB_URI must be set");
@@ -58,6 +82,83 @@ pub async fn connect() -> error::Result<Database> {
     let client = Client::with_uri_str(uri).await?;
     Ok(client.database(db_name.as_str()))
 }
+
+//TODO: Ensure a user can only access data they own at every endpoint!
+//TODO: Add status code returns to every endpoint! This will allow for frontend error messages!
+
+//####### User endpoints #####
+
+//New account
+
+pub async fn create_account(
+    State(db): State<Database>,
+    Json(payload): Json<NewUser>,
+) -> Result<StatusCode, StatusCode> {
+    let hash = hash_pass(payload.password.as_str());
+
+    //TODO: Handle emails that already have an account...
+    match hash {
+        Ok(val) => {
+            let new_user = User {
+                id: ObjectId::new(),
+                email: payload.email,
+                first_name: payload.first_name,
+                last_name: payload.last_name,
+                password_hash: val,
+            };
+            let update = db.collection::<User>("users").insert_one(new_user).await;
+            match update {
+                Ok(_val) => return Ok(StatusCode::OK), //TODO: auto login here?
+                Err(_e) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            }
+        }
+        Err(_e) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+//login
+pub async fn login(
+    State(db): State<Database>,
+    Json(payload): Json<LoginQuery>,
+) -> Result<StatusCode, StatusCode> {
+    let user = db
+        .collection::<User>("users")
+        .find_one(doc! {"email": payload.email})
+        .await;
+
+    let user_opt = match user {
+        Ok(val) => val,
+        Err(_e) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    match user_opt {
+        Some(user) => {
+            if auth::verify_hash(&user.password_hash, &payload.password) {
+                return Ok(StatusCode::OK);
+            } else {
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        }
+        None => return Err(StatusCode::NOT_FOUND),
+    }
+}
+
+//Update User
+
+pub async fn update_user(State(db): State<Database>, Json(payload): Json<User>) {}
+
+//Delete account
+
+pub async fn delete_user(State(db): State<Database>, Query(payload): Query<UserQuery>) {
+    let _ = db
+        .collection::<User>("users")
+        .delete_one(doc! {
+            "_id": payload.id
+        })
+        .await;
+}
+
+//######## List and Todo endpoints... #########
 
 //CREATE
 pub async fn create_list(State(db): State<Database>, Json(_payload): Json<TodoList>) {
