@@ -3,7 +3,7 @@ mod mongo_crud;
 
 use axum::{
     Router,
-    routing::{delete, post, put},
+    routing::{delete, get, post, put},
 };
 
 #[tokio::main]
@@ -13,8 +13,8 @@ async fn main() {
         .expect("Database connection failed.");
 
     let app = Router::new()
-        .route("/lists", post(mongo_crud::get_lists))
-        .route("/todos", post(mongo_crud::get_todos))
+        .route("/lists", get(mongo_crud::get_lists))
+        .route("/todos", get(mongo_crud::get_todos))
         .route("/lists/create", put(mongo_crud::create_list))
         .route("/todos/create", put(mongo_crud::create_todo))
         .route("/lists/delete", delete(mongo_crud::remove_list))
