@@ -203,7 +203,14 @@ pub async fn login(
 
 //Update User
 
-pub async fn update_user(claims: Claims, State(db): State<Database>, Json(payload): Json<User>) {}
+pub async fn update_user(
+    _claims: Claims,
+    State(_db): State<Database>,
+    Json(_payload): Json<User>,
+) -> Result<StatusCode, StatusCode> {
+    //TODO: Implement update user
+    Ok(StatusCode::OK)
+}
 
 //Delete account
 
@@ -316,7 +323,11 @@ pub async fn get_lists(claims: Claims, State(db): State<Database>) -> Json<Optio
     }
 }
 
-pub async fn get_todos(claims: Claims, State(db): State<Database>) -> Json<Option<Vec<TodoItem>>> {
+pub async fn get_todos(
+    claims: Claims,
+    State(db): State<Database>,
+    Query(qry): Query<TodoQuery>,
+) -> Json<Option<Vec<TodoItem>>> {
     let owner_id = claims
         .sub
         .parse::<ObjectId>()
@@ -326,7 +337,8 @@ pub async fn get_todos(claims: Claims, State(db): State<Database>) -> Json<Optio
     let todos = db
         .collection::<TodoItem>("todos")
         .find(doc! {
-            "owner_id": owner_id
+            "owner_id": owner_id,
+            "list_id": qry.list
         })
         .await
         .unwrap();

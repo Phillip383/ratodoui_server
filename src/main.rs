@@ -23,6 +23,8 @@ async fn main() {
         .route("/todos/update", put(mongo_crud::update_todo))
         .route("/users/create", put(mongo_crud::create_account))
         .route("/users/login", post(mongo_crud::login))
+        .route("/users/delete", delete(mongo_crud::delete_user))
+        .route("/users/update", put(mongo_crud::update_user))
         .with_state(db);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
