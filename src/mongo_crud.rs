@@ -1,10 +1,12 @@
 use axum::{
     Json,
-    extract::{Query, State},
-    http::StatusCode,
+    extract::{FromRequestParts, Query, State},
+    http::{StatusCode, header::AUTHORIZATION, request::Parts},
 };
+use chrono::{Duration, Utc};
 use dotenv::dotenv;
 use futures::TryStreamExt;
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use mongodb::{
     Client, Database,
     bson::{doc, oid::ObjectId},
@@ -51,6 +53,7 @@ pub struct TodoItem {
     description: String,
     completed: bool,
     owner_id: Option<ObjectId>,
+    list_id: Option<ObjectId>,
 }
 
 #[derive(Deserialize)]
@@ -65,14 +68,55 @@ pub struct ListQuery {
 }
 
 #[derive(Deserialize)]
-pub struct UserQuery {
-    id: ObjectId,
-}
-
-#[derive(Deserialize)]
 pub struct LoginQuery {
     email: String,
     password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claims {
+    sub: String,
+    exp: usize,
+}
+
+#[derive(Serialize)]
+pub struct AuthResponse {
+    token: String,
+}
+
+impl<S> FromRequestParts<S> for Claims
+where
+    S: Send + Sync,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let auth_header = parts
+            .headers
+            .get(AUTHORIZATION)
+            .and_then(|val| val.to_str().ok());
+
+        let auth_header = match auth_header {
+            Some(header) => header,
+            None => return Err(StatusCode::UNAUTHORIZED),
+        };
+
+        if !auth_header.starts_with("Bearer ") {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        let token = &auth_header[7..];
+        let secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+
+        let token_data = decode::<Claims>(
+            token,
+            &DecodingKey::from_secret(secret.as_bytes()),
+            &Validation::default(),
+        )
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+        Ok(token_data.claims)
+    }
 }
 
 pub async fn connect() -> error::Result<Database> {
@@ -120,21 +164,35 @@ pub async fn create_account(
 pub async fn login(
     State(db): State<Database>,
     Json(payload): Json<LoginQuery>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<Json<AuthResponse>, StatusCode> {
     let user = db
         .collection::<User>("users")
         .find_one(doc! {"email": payload.email})
-        .await;
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let user_opt = match user {
-        Ok(val) => val,
-        Err(_e) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
-
-    match user_opt {
+    match user {
         Some(user) => {
             if auth::verify_hash(&user.password_hash, &payload.password) {
-                return Ok(StatusCode::OK);
+                let exp = Utc::now()
+                    .checked_add_signed(Duration::hours(24))
+                    .expect("valid timestamp")
+                    .timestamp() as usize;
+
+                let claims = Claims {
+                    sub: user.id.to_hex(),
+                    exp,
+                };
+
+                let secret = env::var("JWT_SECRET").expect("JWT_SECRET not set");
+                let token = encode(
+                    &Header::default(),
+                    &claims,
+                    &EncodingKey::from_secret(secret.as_bytes()),
+                )
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+                return Ok(Json(AuthResponse { token }));
             } else {
                 return Err(StatusCode::UNAUTHORIZED);
             }
@@ -145,51 +203,106 @@ pub async fn login(
 
 //Update User
 
-pub async fn update_user(State(db): State<Database>, Json(payload): Json<User>) {}
+pub async fn update_user(claims: Claims, State(db): State<Database>, Json(payload): Json<User>) {}
 
 //Delete account
 
-pub async fn delete_user(State(db): State<Database>, Query(payload): Query<UserQuery>) {
-    let _ = db
+pub async fn delete_user(
+    claims: Claims,
+    State(db): State<Database>,
+) -> Result<StatusCode, StatusCode> {
+    let user_id = claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    match db
         .collection::<User>("users")
         .delete_one(doc! {
-            "_id": payload.id
+            "_id": user_id
         })
-        .await;
+        .await
+    {
+        Ok(res) => {
+            if res.deleted_count > 0 {
+                Ok(StatusCode::OK)
+            } else {
+                Err(StatusCode::NOT_FOUND)
+            }
+        }
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 //######## List and Todo endpoints... #########
 
 //CREATE
-pub async fn create_list(State(db): State<Database>, Json(_payload): Json<TodoList>) {
+pub async fn create_list(
+    claims: Claims,
+    State(db): State<Database>,
+    Json(_payload): Json<TodoList>,
+) -> Result<StatusCode, StatusCode> {
+    let owner_id = claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
     let list = TodoList {
         id: Some(ObjectId::new()),
         title: _payload.title,
-        owner_id: _payload.owner_id,
+        owner_id: Some(owner_id),
     };
 
-    let _ = db
+    match db
         .collection::<TodoList>("todo_lists")
         .insert_one(list)
-        .await;
+        .await
+    {
+        Ok(_) => Ok(StatusCode::CREATED),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
-pub async fn create_todo(State(db): State<Database>, Json(_payload): Json<TodoItem>) {
+pub async fn create_todo(
+    claims: Claims,
+    State(db): State<Database>,
+    Json(_payload): Json<TodoItem>,
+) -> Result<StatusCode, StatusCode> {
+    let owner_id = claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
     let todo = TodoItem {
         id: Some(ObjectId::new()),
         title: _payload.title,
         description: _payload.description,
         completed: _payload.completed,
-        owner_id: _payload.owner_id,
+        list_id: _payload.list_id, //TODO: This is probably not the best way to handle this, should check if the list exists before creating the todo and owned by the user...
+        owner_id: Some(owner_id),
     };
 
-    let _ = db.collection::<TodoItem>("todos").insert_one(todo).await;
+    match db.collection::<TodoItem>("todos").insert_one(todo).await {
+        Ok(_) => Ok(StatusCode::CREATED),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 //READ
 
-pub async fn get_lists(State(db): State<Database>) -> Json<Option<Vec<TodoList>>> {
-    let lists = db.collection::<TodoList>("todo_lists").find(doc! {}).await;
+pub async fn get_lists(claims: Claims, State(db): State<Database>) -> Json<Option<Vec<TodoList>>> {
+    let owner_id = claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)
+        .ok();
+
+    let lists = db
+        .collection::<TodoList>("todo_lists")
+        .find(doc! {
+            "owner_id": owner_id
+        })
+        .await;
 
     match lists {
         Ok(val) => {
@@ -203,14 +316,17 @@ pub async fn get_lists(State(db): State<Database>) -> Json<Option<Vec<TodoList>>
     }
 }
 
-pub async fn get_todos(
-    State(db): State<Database>,
-    Query(opts): Query<TodoQuery>,
-) -> Json<Option<Vec<TodoItem>>> {
+pub async fn get_todos(claims: Claims, State(db): State<Database>) -> Json<Option<Vec<TodoItem>>> {
+    let owner_id = claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)
+        .ok();
+
     let todos = db
         .collection::<TodoItem>("todos")
         .find(doc! {
-            "owner_id": opts.list
+            "owner_id": owner_id
         })
         .await
         .unwrap();
@@ -220,26 +336,51 @@ pub async fn get_todos(
 
 //UPDATE
 //TODO: Refactor these to only require the specific parts needing updates instead of the entire doc...
-pub async fn update_list(State(db): State<Database>, Json(_payload): Json<TodoList>) {
-    let _ = db
+pub async fn update_list(
+    claims: Claims,
+    State(db): State<Database>,
+    Json(_payload): Json<TodoList>,
+) -> Result<StatusCode, StatusCode> {
+    let owner_id = claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)
+        .ok();
+
+    match db
         .collection::<TodoList>("todo_lists")
         .update_one(
-            doc! {"_id": _payload.id},
+            doc! {"_id": _payload.id, "owner_id": owner_id},
             doc! {
                 "$set": {
                     "title": _payload.title
                 }
             },
         )
-        .await;
+        .await
+    {
+        Ok(_) => Ok(StatusCode::OK),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
-pub async fn update_todo(State(db): State<Database>, Json(_payload): Json<TodoItem>) {
-    let _ = db
+pub async fn update_todo(
+    claims: Claims,
+    State(db): State<Database>,
+    Json(_payload): Json<TodoItem>,
+) -> Result<StatusCode, StatusCode> {
+    let owner_id = claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)
+        .ok();
+
+    match db
         .collection::<TodoItem>("todos")
         .update_one(
             doc! {
-                "_id": _payload.id
+                "_id": _payload.id,
+                "owner_id": owner_id
             },
             doc! {
                 "$set": {
@@ -249,36 +390,84 @@ pub async fn update_todo(State(db): State<Database>, Json(_payload): Json<TodoIt
                 }
             },
         )
-        .await;
+        .await
+    {
+        Ok(_) => Ok(StatusCode::OK),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 //DELETE
 
-pub async fn remove_list(State(db): State<Database>, Query(_opts): Query<ListQuery>) {
-    //Remove the list..
-    let result = db
+pub async fn remove_list(
+    claims: Claims,
+    State(db): State<Database>,
+    Query(_opts): Query<ListQuery>,
+) -> Result<StatusCode, StatusCode> {
+    let owner_id = claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)
+        .ok();
+
+    match db
         .collection::<TodoList>("todo_lists")
         .delete_one(doc! {
-            "_id": _opts.id
+            "_id": _opts.id,
+            "owner_id": owner_id
         })
         .await
-        .unwrap_or_default();
-
-    //Only delete todo's if list was deleted.
-    if result.deleted_count > 0 {
-        //Delete the todo's in the list...
-        let _ = db
-            .collection::<TodoItem>("todos")
-            .delete_many(doc! {"owner_id": _opts.id})
-            .await;
+    {
+        Ok(result) => {
+            if result.deleted_count > 0 {
+                match db
+                    .collection::<TodoItem>("todos")
+                    .delete_many(doc! {"owner_id": _opts.id})
+                    .await
+                {
+                    Ok(_) => return Ok(StatusCode::OK),
+                    Err(_) => {
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            } else {
+                return Ok(StatusCode::NOT_FOUND);
+            }
+        }
+        Err(_) => {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 }
 
-pub async fn remove_todo(State(db): State<Database>, Query(_opts): Query<TodoQuery>) {
-    let _ = db
+pub async fn remove_todo(
+    claims: Claims,
+    State(db): State<Database>,
+    Query(_opts): Query<TodoQuery>,
+) -> Result<StatusCode, StatusCode> {
+    let owner_id = claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)
+        .ok();
+
+    match db
         .collection::<TodoItem>("todos")
         .delete_one(doc! {
             "_id": _opts.id,
+            "owner_id": owner_id
         })
-        .await;
+        .await
+    {
+        Ok(result) => {
+            if result.deleted_count > 0 {
+                return Ok(StatusCode::OK);
+            } else {
+                return Ok(StatusCode::NOT_FOUND);
+            }
+        }
+        Err(_) => {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
 }

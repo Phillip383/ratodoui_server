@@ -33,7 +33,7 @@ pub fn verify_hash(stored_hash: &str, password: &str) -> bool {
 
     let parse = match PasswordHash::new(stored_hash) {
         Ok(hash) => hash,
-        Err(e) => return false,
+        Err(_) => return false,
     };
 
     Argon2::new_with_secret(
