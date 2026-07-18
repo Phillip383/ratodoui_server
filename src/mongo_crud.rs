@@ -127,9 +127,6 @@ pub async fn connect() -> error::Result<Database> {
     Ok(client.database(db_name.as_str()))
 }
 
-//TODO: Ensure a user can only access data they own at every endpoint!
-//TODO: Add status code returns to every endpoint! This will allow for frontend error messages!
-
 //####### User endpoints #####
 
 //New account
@@ -209,7 +206,29 @@ pub async fn update_user(
     Json(_payload): Json<User>,
 ) -> Result<StatusCode, StatusCode> {
     //TODO: Implement update user
-    Ok(StatusCode::OK)
+    let user_id = _claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    match _db
+        .collection::<User>("users")
+        .update_one(
+            doc! {
+                "_id": user_id
+            },
+            doc! {"$set": {
+                "first_name": _payload.first_name,
+                "last_name": _payload.last_name,
+                "email": _payload.email,
+                "password_hash": _payload.password_hash,
+            }},
+        )
+        .await
+    {
+        Ok(_) => Ok(StatusCode::OK),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 //Delete account
