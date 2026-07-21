@@ -9,7 +9,7 @@ use futures::TryStreamExt;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use mongodb::{
     Client, Database,
-    bson::{doc, oid::ObjectId},
+    bson::{self, doc, oid::ObjectId},
     error,
 };
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,22 @@ pub struct NewUser {
     first_name: String,
     last_name: String,
     password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateUser {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdatePassword {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -198,12 +214,37 @@ pub async fn login(
     }
 }
 
+pub async fn update_password(
+    _claims: Claims,
+    State(_db): State<Database>,
+    Json(_payload): Json<UpdatePassword>,
+) -> Result<StatusCode, StatusCode> {
+    let user_id = _claims
+        .sub
+        .parse::<ObjectId>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    if let Some(password) = _payload.password {
+        let hash = hash_pass(password.as_str()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        _db.collection::<User>("users")
+            .update_one(
+                doc! {"_id": user_id},
+                doc! {"$set": {"password_hash": hash}},
+            )
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    Ok(StatusCode::OK)
+}
+
 //Update User
 
 pub async fn update_user(
     _claims: Claims,
     State(_db): State<Database>,
-    Json(_payload): Json<User>,
+    Json(_payload): Json<UpdateUser>,
 ) -> Result<StatusCode, StatusCode> {
     //TODO: Implement update user
     let user_id = _claims
@@ -211,18 +252,15 @@ pub async fn update_user(
         .parse::<ObjectId>()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
+    let update = bson::to_document(&_payload).map_err(|_| StatusCode::BAD_REQUEST)?;
+
     match _db
         .collection::<User>("users")
         .update_one(
             doc! {
                 "_id": user_id
             },
-            doc! {"$set": {
-                "first_name": _payload.first_name,
-                "last_name": _payload.last_name,
-                "email": _payload.email,
-                "password_hash": _payload.password_hash,
-            }},
+            doc! { "$set": update},
         )
         .await
     {
